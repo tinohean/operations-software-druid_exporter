@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# github: https://github.com/wikimedia/operations-software-druid_exporter
 
 import logging
 
@@ -86,17 +87,8 @@ class DruidCollector(object):
                 'segment/unavailable/count': ['dataSource'],
                 'segment/underReplicated/count': ['tier', 'dataSource'],
             },
-            'peon': {
-                'query/time': ['dataSource'],
-                'query/bytes': ['dataSource'],
-                'ingest/events/thrownAway': ['dataSource'],
-                'ingest/events/unparseable': ['dataSource'],
-                'ingest/events/processed': ['dataSource'],
-                'ingest/rows/output': ['dataSource'],
-                'ingest/persists/count': ['dataSource'],
-                'ingest/persists/failed': ['dataSource'],
-                'ingest/handoff/failed': ['dataSource'],
-                'ingest/handoff/count': ['dataSource'],
+            'overlord': {
+                'ingest/kafka/lag': ['dataSource'],
             },
         }
 
@@ -151,54 +143,19 @@ class DruidCollector(object):
             'segment/size',
             'segment/unavailable/count',
             'segment/underReplicated/count',
-            'ingest/events/thrownAway',
-            'ingest/events/unparseable',
-            'ingest/events/processed',
-            'ingest/rows/output',
-            'ingest/persists/count',
-            'ingest/persists/failed',
-            'ingest/handoff/failed',
-            'ingest/handoff/count',
+            'ingest/kafka/lag',
         ])
 
     @staticmethod
     def sanitize_field(datapoint_field):
         return datapoint_field.replace('druid/', '').lower()
 
-    def _get_realtime_counters(self):
+    def _get_overlord_counters(self):
         return {
-            'ingest/events/thrownAway': GaugeMetricFamily(
-               'druid_realtime_ingest_events_thrown_away_count',
-               'Number of events rejected because '
-               'they are outside the windowPeriod.',
-               labels=['datasource']),
-            'ingest/events/unparseable': GaugeMetricFamily(
-               'druid_realtime_ingest_events_unparseable_count',
-               'Number of events rejected because the events are unparseable.',
-               labels=['datasource']),
-            'ingest/events/processed': GaugeMetricFamily(
-               'druid_realtime_ingest_events_processed_count',
-               'Number of events successfully processed per emission period.',
-               labels=['datasource']),
-            'ingest/rows/output': GaugeMetricFamily(
-               'druid_realtime_ingest_rows_output_count',
-               'Number of Druid rows persisted.',
-               labels=['datasource']),
-            'ingest/persists/count': GaugeMetricFamily(
-               'druid_realtime_ingest_persists_count',
-               'Number of times persist occurred.',
-               labels=['datasource']),
-            'ingest/persists/failed': GaugeMetricFamily(
-               'druid_realtime_ingest_persists_failed_count',
-               'Number of times persist failed.',
-               labels=['datasource']),
-            'ingest/handoff/failed': GaugeMetricFamily(
-               'druid_realtime_ingest_handoff_failed_count',
-               'Number of times handoff failed.',
-               labels=['datasource']),
-            'ingest/handoff/count': GaugeMetricFamily(
-               'druid_realtime_ingest_handoff_count',
-               'Number of times handoff has happened.',
+            'ingest/kafka/lag': GaugeMetricFamily(
+               'druid_overlord_kafka_lag_total',
+               'Total lag between the offsets consumed by the Kafka indexing tasks and latest offsets in Kafka brokers'
+               'across all partitions. Minimum emission period for this metric is a minute.',
                labels=['datasource']),
         }
 
@@ -337,10 +294,8 @@ class DruidCollector(object):
             self.counters = {}
             datapoint = {'service': 'druid/broker', 'metric'='segment/size',
                          'datasource': 'test', 'value': 10}
-
             This function will creates the following:
             self.counters = {'segment/size': {'broker': {'test': 10}}}
-
             The algorithm is generic enough to support all metrics handled by
             self.counters without caring about the number of labels needed.
         """
@@ -376,7 +331,6 @@ class DruidCollector(object):
             self.histograms = {}
             datapoint = {'service': 'druid/broker', 'metric'='query/time',
                          'datasource': 'test', 'value': 10}
-
             This function will creates the following:
             self.counters = {'query/time': {'broker':
                 {'test': {'10': 1, '100': 1, etc.., 'sum': 10}}}}}
@@ -403,8 +357,8 @@ class DruidCollector(object):
 
     @scrape_duration.time()
     def collect(self):
-        # Metrics common to Broker, Historical and Peon
-        for daemon in ['broker', 'historical', 'peon']:
+        # Metrics common to Broker, Historical
+        for daemon in ['broker', 'historical']:
             query_metrics = self._get_query_histograms(daemon)
             cache_metrics = self._get_cache_counters(daemon)
 
@@ -449,10 +403,10 @@ class DruidCollector(object):
 
         historical_health_metrics = self._get_historical_counters()
         coordinator_metrics = self._get_coordinator_counters()
-        realtime_metrics = self._get_realtime_counters()
+        overlord_metrics = self._get_overlord_counters()
         for daemon, metrics in [('coordinator', coordinator_metrics),
                                 ('historical', historical_health_metrics),
-                                ('peon', realtime_metrics)]:
+                                ('overlord', overlord_metrics)]:
             for metric in metrics:
                 if not self.counters[metric] or daemon not in self.counters[metric]:
                     if not self.supported_metric_names[daemon][metric]:
